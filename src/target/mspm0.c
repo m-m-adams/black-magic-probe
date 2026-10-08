@@ -155,8 +155,10 @@ bool mspm0_probe(target_s *const target)
 	const uint32_t mainflash_size = 1024U *
 		((sramflash & MSPM0_FACTORYREGION_SRAMFLASH_MAINFLASH_SZ_MASK) >>
 			MSPM0_FACTORYREGION_SRAMFLASH_MAINFLASH_SZ_SHIFT);
-	const uint32_t main_num_banks = (sramflash & MSPM0_FACTORYREGION_SRAMFLASH_MAINNUMBANKS_MASK) >>
-		MSPM0_FACTORYREGION_SRAMFLASH_MAINNUMBANKS_SHIFT;
+	/* Per MSPM0 Datasheet section 1.5.2.7, table 1-124: main_num_banks is one more than recorded */
+	const uint32_t main_num_banks = ((sramflash & MSPM0_FACTORYREGION_SRAMFLASH_MAINNUMBANKS_MASK) >>
+										MSPM0_FACTORYREGION_SRAMFLASH_MAINNUMBANKS_SHIFT) +
+		1U;
 	const uint32_t sram_size = 1024U *
 		((sramflash & MSPM0_FACTORYREGION_SRAMFLASH_SRAM_SZ_MASK) >> MSPM0_FACTORYREGION_SRAMFLASH_SRAM_SZ_SHIFT);
 	const uint32_t dataflash_size = 1024U *
