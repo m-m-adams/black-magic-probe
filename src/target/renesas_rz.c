@@ -36,6 +36,8 @@
 #include "target.h"
 #include "target_internal.h"
 #include "cortexar.h"
+#include "cortex.h"
+#include "cortex_internal.h"
 #include "spi.h"
 #include "sfdp.h"
 
@@ -141,6 +143,43 @@
 
 #define RENESAS_ARM_PL310_CACHE_ASSOCIATIVITY 8U
 
+/* Cortex-A9 (ARMv7) debug registers used for reset handling, copied from cortexar.c */
+#define CORTEXA9_DBG_VCR  0x01cU
+#define CORTEXA9_DBG_DSCR 0x088U
+#define CORTEXA9_DBG_PRSR 0x314U
+
+#define CORTEXA9_DBG_VCR_RESET               (1U << 0U)
+#define CORTEXA9_DBG_DSCR_HALTED             (1U << 0U)
+#define CORTEXA9_DBG_DSCR_HALTING_DBG_ENABLE (1U << 14U)
+#define CORTEXA9_DBG_PRSR_RESET_ACTIVE       (1U << 2U)
+#define CORTEXA9_DBG_PRSR_STICKY_RESET       (1U << 3U)
+
+/*
+ * The boot ROM starts the loader from the start of SPI flash. The Renesas RZ/A1 sample loader then looks for an
+ * application image at the offset below, copies it into RAM and jumps to the execute address in its header.
+ */
+#define RENESAS_APP_HEADER_BASE      (RENESAS_SPI_FLASH_BASE + 0x00080000U)
+#define RENESAS_APP_HEADER_EXECUTE   (RENESAS_APP_HEADER_BASE + 0x028U)
+#define RENESAS_APP_HEADER_SIGNATURE (RENESAS_APP_HEADER_BASE + 0x02cU)
+/* First 4 bytes of the ".BootLoad_ValidProgramTest." signature */
+#define RENESAS_APP_HEADER_SIGNATURE_VALUE 0x6f6f422eU
+
+/* Watchdog timer registers, from R01UH0437EJ0700 §12.3 */
+/* WDT registers are written as 16-bit values with a key in the upper byte to guard against accidental writes */
+#define RENESAS_WDT_BASE  0xfcfe0000U
+#define RENESAS_WDT_WTCSR (RENESAS_WDT_BASE + 0x000U)
+#define RENESAS_WDT_WTCNT (RENESAS_WDT_BASE + 0x002U)
+#define RENESAS_WDT_WRCSR (RENESAS_WDT_BASE + 0x004U)
+
+#define RENESAS_WDT_WTCSR_MAGIC      0xa500U
+#define RENESAS_WDT_WTCSR_WT         (1U << 6U)
+#define RENESAS_WDT_WTCSR_TME        (1U << 5U)
+#define RENESAS_WDT_WTCNT_MAGIC      0x5a00U
+#define RENESAS_WDT_WTCNT_MAX		 0x00ffU /* Counter value that overflows on the next count, §12.5.2 */
+#define RENESAS_WDT_WRCSR_MAGIC      0x5a00U
+#define RENESAS_WDT_WRCSR_RSTE       (1U << 6U)
+#define RENESAS_WDT_WRCSR_CLEAR_WOVF 0xa500U
+
 /* This is the part number from the ROM table of a R7S721030 and is a guess */
 #define ID_RZ_A1 0x012U
 
@@ -152,6 +191,13 @@ static void renesas_rz_spi_read(target_s *target, uint16_t command, target_addr_
 static void renesas_rz_spi_write(
 	target_s *target, uint16_t command, target_addr_t address, const void *buffer, size_t length);
 static void renesas_rz_spi_run_command(target_s *target, uint16_t command, target_addr_t address);
+static void renesas_rz_reset(target_s *target);
+static bool renesas_rz_cmd_reset_halt(target_s *target, int argc, const char **argv);
+
+static const command_s renesas_rz_cmd_list[] = {
+	{"reset_halt", renesas_rz_cmd_reset_halt, "Reset the SoC and halt the core at the application entry point"},
+	{NULL, NULL, NULL},
+};
 
 static void renesas_rz_add_flash(target_s *const target)
 {
@@ -181,6 +227,14 @@ bool renesas_rz_probe(target_s *const target)
 		return false;
 
 	target->driver = renesas_rz_part_name(part_id);
+	/*
+	 * The generic Cortex-A/R reset pulses nRST, which also resets the debug logic, and then lets the core run
+	 * straight into whatever firmware is present. Replace it with one that halts the core before the application runs.
+	 * N.B. the bootloader still runs, and the renesas bootloader will overwrite the application from flash.
+	 * If loading to ram it must be done after this reset
+	 */
+	target->reset = renesas_rz_reset;
+	target_add_commands(target, renesas_rz_cmd_list, target->driver);
 
 	/* Now determine the boot mode */
 	const uint8_t boot_mode = target_mem32_read32(target, RENESAS_BSCAN_BOOT_MODE) & RENESAS_BSCAN_BOOT_MODE_MASK;
@@ -221,6 +275,130 @@ static uint32_t renesas_rz_ram_size(target_s *target)
 			return addr - RENESAS_OCRAM_BASE;
 	}
 	return RENESAS_OCRAM_MAX_SIZE;
+}
+
+/*
+ * Reset the whole SoC by making the watchdog overflow with its internal reset enabled. The internal reset is used as
+ * the power-on reset (§12.1), but unlike nRST it leaves the debug logic alone. Leaves WRCSR.WOVF set (§12.5.5).
+ */
+static void renesas_rz_wdt_reset(target_s *const target)
+{
+	/* Stop the timer and clear any previous overflow, as WOVF being set blocks further resets (§12.5.5) */
+	target_mem32_write16(target, RENESAS_WDT_WTCSR, RENESAS_WDT_WTCSR_MAGIC);
+	target_mem32_read8(target, RENESAS_WDT_WRCSR);
+	target_mem32_write16(target, RENESAS_WDT_WRCSR, RENESAS_WDT_WRCSR_CLEAR_WOVF);
+	/*
+	 * Enable reset on overflow, load WTCNT with H'FF (which counts as an immediate overflow, §12.5.2) and start the
+	 * timer in watchdog mode, which resets the SoC straight away
+	 */
+	target_mem32_write16(target, RENESAS_WDT_WRCSR, RENESAS_WDT_WRCSR_MAGIC | RENESAS_WDT_WRCSR_RSTE);
+	target_mem32_write16(target, RENESAS_WDT_WTCNT, RENESAS_WDT_WTCNT_MAGIC | RENESAS_WDT_WTCNT_MAX);
+	target_mem32_write16(
+		target, RENESAS_WDT_WTCSR, RENESAS_WDT_WTCSR_MAGIC | RENESAS_WDT_WTCSR_WT | RENESAS_WDT_WTCSR_TME);
+}
+
+/* Wait for the core to halt, then have halt_poll() set it up for debug and save its registers */
+static void renesas_rz_wait_halt(target_s *const target, const uint32_t timeout_ms)
+{
+	platform_timeout_s timeout;
+	platform_timeout_set(&timeout, timeout_ms);
+	while (!(cortex_dbg_read32(target, CORTEXA9_DBG_DSCR) & CORTEXA9_DBG_DSCR_HALTED) &&
+		!platform_timeout_is_expired(&timeout))
+		continue;
+	target_halt_poll(target, NULL);
+}
+
+/* Resume the core and let it run until it reaches the given (ARM mode) address, using a hardware breakpoint */
+static void renesas_rz_run_to(target_s *const target, const target_addr_t address)
+{
+	target_breakwatch_set(target, TARGET_BREAK_HARD, address, 4U);
+	target_halt_resume(target, false);
+	renesas_rz_wait_halt(target, 2000U);
+	target_breakwatch_clear(target, TARGET_BREAK_HARD, address, 4U);
+}
+
+static void renesas_rz_run_to_app(target_s *const target)
+{
+	/* Run the boot ROM up to where it hands over to the loader, by which point it's set up the SPI flash window */
+	renesas_rz_run_to(target, RENESAS_SPI_FLASH_BASE);
+	/* Check there's a valid application image for the loader to start, so we don't run to a garbage address */
+	if (target_mem32_read32(target, RENESAS_APP_HEADER_SIGNATURE) != RENESAS_APP_HEADER_SIGNATURE_VALUE)
+		return;
+	/* Then run the loader up to the application's entry point */
+	renesas_rz_run_to(target, target_mem32_read32(target, RENESAS_APP_HEADER_EXECUTE));
+}
+
+/*
+ * Reset the whole SoC via the watchdog and catch on the reset vector before the boot ROM gets a chance to run.
+ * When booting from SPI flash, the boot ROM and loader are then allowed to run up to the application.
+ * The reset is done via the watchdog rather than nRST. On the tested board nRST also resets the debug logic
+ * and by the time it can be accessed again the core is already running.
+ *
+ * The alternative considered was to pulse nRST, bring the DP back up (JTAG-to-SWD switch and power-up request) and
+ * then halt the core by request as soon as possible (which appears to be what J-Link's Cortex-A reset falls back to).
+ * That seems to usually be midway through the loader. Resetting via the watchdog instead keeps the vector catch so
+ * it'll always land on the reset vector, then run to the application entry once the loader has finished.
+ */
+static void renesas_rz_reset(target_s *const target)
+{
+	/*
+	 * Make sure halting debug is enabled, as without it the vector catch falls to the abort handler
+	 */
+	const uint32_t dscr = cortex_dbg_read32(target, CORTEXA9_DBG_DSCR);
+	cortex_dbg_write32(target, CORTEXA9_DBG_DSCR, dscr | CORTEXA9_DBG_DSCR_HALTING_DBG_ENABLE);
+	/* Arm the reset vector catch */
+	const uint32_t vcr = cortex_dbg_read32(target, CORTEXA9_DBG_VCR);
+	cortex_dbg_write32(target, CORTEXA9_DBG_VCR, vcr | CORTEXA9_DBG_VCR_RESET);
+	/* Read PRSR to clear its sticky reset bit so we can tell when the reset below has actually happened */
+	cortex_dbg_read32(target, CORTEXA9_DBG_PRSR);
+
+	renesas_rz_wdt_reset(target);
+
+	/*
+	 * Wait for the reset to happen (sticky reset set) and complete (reset no longer active). The core was halted
+	 * before the reset, so this must be seen before checking for it halting again on the reset vector.
+	 */
+	platform_timeout_s timeout;
+	platform_timeout_set(&timeout, 1000);
+	bool reset_seen = false;
+	while (!platform_timeout_is_expired(&timeout)) {
+		const uint32_t prsr = cortex_dbg_read32(target, CORTEXA9_DBG_PRSR);
+		reset_seen |= (prsr & CORTEXA9_DBG_PRSR_STICKY_RESET) != 0U;
+		if (reset_seen && !(prsr & CORTEXA9_DBG_PRSR_RESET_ACTIVE))
+			break;
+	}
+
+	/* Wait for the core to halt on the reset vector */
+	renesas_rz_wait_halt(target, 250U);
+
+	/* Disarm the vector catch so a reset initiated by the firmware (watchdog etc) does not halt the core */
+	cortex_dbg_write32(target, CORTEXA9_DBG_VCR, vcr & ~CORTEXA9_DBG_VCR_RESET);
+
+	/*
+	 * When booting from SPI flash, let the boot ROM and loader run, stopping at the application's entry point.
+	 * This leaves the hardware set up by the loader (which some firmware relies on), without running any of
+	 * the application itself.
+	 */
+	const uint8_t boot_mode = target_mem32_read32(target, RENESAS_BSCAN_BOOT_MODE) & RENESAS_BSCAN_BOOT_MODE_MASK;
+	if (boot_mode == RENESAS_BSCAN_BOOT_MODE_SPI)
+		renesas_rz_run_to_app(target);
+}
+
+/*
+ * Monitor command that does the same reset as GDB's run/start without killing the target.
+ * IDE front ends treat a kill as ending the debug session and disconnect.
+ * Should be followed by maintenance flush register-cache as gdb won't do that automatically
+ */
+static bool renesas_rz_cmd_reset_halt(target_s *const target, const int argc, const char **const argv)
+{
+	(void)argc;
+	(void)argv;
+	target_reset(target);
+	const bool halted = cortex_dbg_read32(target, CORTEXA9_DBG_DSCR) & CORTEXA9_DBG_DSCR_HALTED;
+	uint32_t pc = 0U;
+	target_reg_read(target, CORTEX_REG_PC, &pc, sizeof(pc));
+	tc_printf(target, "Core %s after reset, PC = 0x%08" PRIx32 "\n", halted ? "halted" : "NOT halted", pc);
+	return halted;
 }
 
 static bool renesas_rz_flash_prepare(target_s *const target)
