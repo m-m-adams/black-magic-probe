@@ -143,16 +143,6 @@
 
 #define RENESAS_ARM_PL310_CACHE_ASSOCIATIVITY 8U
 
-/* Cortex-A9 (ARMv7) debug registers used for reset handling, copied from cortexar.c */
-#define CORTEXA9_DBG_VCR  0x01cU
-#define CORTEXA9_DBG_DSCR 0x088U
-#define CORTEXA9_DBG_PRSR 0x314U
-
-#define CORTEXA9_DBG_VCR_RESET               (1U << 0U)
-#define CORTEXA9_DBG_DSCR_HALTED             (1U << 0U)
-#define CORTEXA9_DBG_DSCR_HALTING_DBG_ENABLE (1U << 14U)
-#define CORTEXA9_DBG_PRSR_RESET_ACTIVE       (1U << 2U)
-#define CORTEXA9_DBG_PRSR_STICKY_RESET       (1U << 3U)
 
 /*
  * The boot ROM starts the loader from the start of SPI flash. The Renesas RZ/A1 sample loader then looks for an
@@ -302,7 +292,7 @@ static void renesas_rz_wait_halt(target_s *const target, const uint32_t timeout_
 {
 	platform_timeout_s timeout;
 	platform_timeout_set(&timeout, timeout_ms);
-	while (!(cortex_dbg_read32(target, CORTEXA9_DBG_DSCR) & CORTEXA9_DBG_DSCR_HALTED) &&
+	while (!(cortex_dbg_read32(target, CORTEXAR_DBG_DSCR) & CORTEXAR_DBG_DSCR_HALTED) &&
 		!platform_timeout_is_expired(&timeout))
 		continue;
 	target_halt_poll(target, NULL);
@@ -344,13 +334,13 @@ static void renesas_rz_reset(target_s *const target)
 	/*
 	 * Make sure halting debug is enabled, as without it the vector catch falls to the abort handler
 	 */
-	const uint32_t dscr = cortex_dbg_read32(target, CORTEXA9_DBG_DSCR);
-	cortex_dbg_write32(target, CORTEXA9_DBG_DSCR, dscr | CORTEXA9_DBG_DSCR_HALTING_DBG_ENABLE);
+	const uint32_t dscr = cortex_dbg_read32(target, CORTEXAR_DBG_DSCR);
+	cortex_dbg_write32(target, CORTEXAR_DBG_DSCR, dscr | CORTEXAR_DBG_DSCR_HALTING_DBG_ENABLE);
 	/* Arm the reset vector catch */
-	const uint32_t vcr = cortex_dbg_read32(target, CORTEXA9_DBG_VCR);
-	cortex_dbg_write32(target, CORTEXA9_DBG_VCR, vcr | CORTEXA9_DBG_VCR_RESET);
+	const uint32_t vcr = cortex_dbg_read32(target, CORTEXAR_DBG_VCR);
+	cortex_dbg_write32(target, CORTEXAR_DBG_VCR, vcr | CORTEXAR_DBG_VCR_RESET);
 	/* Read PRSR to clear its sticky reset bit so we can tell when the reset below has actually happened */
-	cortex_dbg_read32(target, CORTEXA9_DBG_PRSR);
+	cortex_dbg_read32(target, CORTEXAR_DBG_PRSR);
 
 	renesas_rz_wdt_reset(target);
 
@@ -362,9 +352,9 @@ static void renesas_rz_reset(target_s *const target)
 	platform_timeout_set(&timeout, 1000);
 	bool reset_seen = false;
 	while (!platform_timeout_is_expired(&timeout)) {
-		const uint32_t prsr = cortex_dbg_read32(target, CORTEXA9_DBG_PRSR);
-		reset_seen |= (prsr & CORTEXA9_DBG_PRSR_STICKY_RESET) != 0U;
-		if (reset_seen && !(prsr & CORTEXA9_DBG_PRSR_RESET_ACTIVE))
+		const uint32_t prsr = cortex_dbg_read32(target, CORTEXAR_DBG_PRSR);
+		reset_seen |= (prsr & CORTEXAR_DBG_PRSR_STICKY_RESET) != 0U;
+		if (reset_seen && !(prsr & CORTEXAR_DBG_PRSR_RESET_ACTIVE))
 			break;
 	}
 
@@ -372,7 +362,7 @@ static void renesas_rz_reset(target_s *const target)
 	renesas_rz_wait_halt(target, 250U);
 
 	/* Disarm the vector catch so a reset initiated by the firmware (watchdog etc) does not halt the core */
-	cortex_dbg_write32(target, CORTEXA9_DBG_VCR, vcr & ~CORTEXA9_DBG_VCR_RESET);
+	cortex_dbg_write32(target, CORTEXAR_DBG_VCR, vcr & ~CORTEXAR_DBG_VCR_RESET);
 
 	/*
 	 * When booting from SPI flash, let the boot ROM and loader run, stopping at the application's entry point.
@@ -394,7 +384,7 @@ static bool renesas_rz_cmd_reset_halt(target_s *const target, const int argc, co
 	(void)argc;
 	(void)argv;
 	target_reset(target);
-	const bool halted = cortex_dbg_read32(target, CORTEXA9_DBG_DSCR) & CORTEXA9_DBG_DSCR_HALTED;
+	const bool halted = cortex_dbg_read32(target, CORTEXAR_DBG_DSCR) & CORTEXAR_DBG_DSCR_HALTED;
 	uint32_t pc = 0U;
 	target_reg_read(target, CORTEX_REG_PC, &pc, sizeof(pc));
 	tc_printf(target, "Core %s after reset, PC = 0x%08" PRIx32 "\n", halted ? "halted" : "NOT halted", pc);
