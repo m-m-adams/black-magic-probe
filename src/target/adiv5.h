@@ -186,6 +186,7 @@
 #define ADIV5_AP_FLAGS_HAS_MEM         (1U << 1U)
 #define ADIV6_DP_FLAGS_HAS_PWRCTRL     (1U << 2U)
 #define ADIV6_DP_FLAGS_HAS_SYSRESETREQ (1U << 3U)
+#define ADIV5_AP_FLAGS_SYSBUS          (1U << 4U) /* AP is only used for system bus access, so needs no debug entries */
 
 /* ADIv5 Class 0x1 ROM Table Registers */
 #define ADI_ROM_MEMTYPE          0xfccU
@@ -249,6 +250,7 @@ void adiv5_swd_multidrop_scan(adiv5_debug_port_s *dp, uint32_t targetid);
 /* DP and AP discovery functions */
 void adiv5_dp_init(adiv5_debug_port_s *dp);
 adiv5_access_port_s *adiv5_new_ap(adiv5_debug_port_s *dp, uint8_t apsel);
+adiv5_access_port_s *adiv5_new_sysbus_ap(adiv5_debug_port_s *dp, uint8_t apsel);
 
 /* AP lifetime management functions */
 void adiv5_ap_ref(adiv5_access_port_s *ap);

@@ -395,6 +395,10 @@ static bool adi_configure_mem_ap(adiv5_access_port_s *const ap)
 		else if (ap->dp->target_designer_code == JEP106_MANUFACTURER_NORDIC && ap->base != 0x00000002U)
 			ignore_not_present = true;
 
+		/* A system bus AP is only used to access memory, so it doesn't need any debug entries */
+		else if (ap->flags & ADIV5_AP_FLAGS_SYSBUS)
+			ignore_not_present = true;
+
 		if (!ignore_not_present) {
 			DEBUG_INFO(" -> Not Present\n");
 			return false;

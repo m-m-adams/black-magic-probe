@@ -213,11 +213,13 @@ static bool cortexm_prepare(adiv5_access_port_s *ap)
 	return true;
 }
 
-adiv5_access_port_s *adiv5_new_ap(adiv5_debug_port_s *const dp, const uint8_t apsel)
+static adiv5_access_port_s *adiv5_new_ap_with_flags(
+	adiv5_debug_port_s *const dp, const uint8_t apsel, const uint8_t flags)
 {
 	adiv5_access_port_s ap = {
 		.dp = dp,
 		.apsel = apsel,
+		.flags = flags,
 	};
 	/* Try to configure the AP for use */
 	if (!adi_configure_ap(&ap))
@@ -233,6 +235,26 @@ adiv5_access_port_s *adiv5_new_ap(adiv5_debug_port_s *const dp, const uint8_t ap
 	memcpy(result, &ap, sizeof(*result));
 	adiv5_ap_ref(result);
 	return result;
+}
+
+adiv5_access_port_s *adiv5_new_ap(adiv5_debug_port_s *const dp, const uint8_t apsel)
+{
+	return adiv5_new_ap_with_flags(dp, apsel, 0U);
+}
+
+/*
+ * Create a MEM-AP for use purely as a system bus master. Unlike adiv5_new_ap(), this accepts an AP
+ * whose Debug Base Address register reports no debug entries, which is normal for a system AHB-AP
+ */
+adiv5_access_port_s *adiv5_new_sysbus_ap(adiv5_debug_port_s *const dp, const uint8_t apsel)
+{
+	adiv5_access_port_s *const ap = adiv5_new_ap_with_flags(dp, apsel, ADIV5_AP_FLAGS_SYSBUS);
+	/* Only a MEM-AP can be used to access the system bus */
+	if (ap && ADIV5_AP_IDR_CLASS(ap->idr) != ADIV5_AP_IDR_CLASS_MEM) {
+		adiv5_ap_unref(ap);
+		return NULL;
+	}
+	return ap;
 }
 
 /* No real AP on RP2040. Special setup.*/

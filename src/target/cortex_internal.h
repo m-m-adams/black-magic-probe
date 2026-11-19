@@ -63,6 +63,8 @@
 typedef struct cortex_priv {
 	/* AP from which this CPU hangs */
 	adiv5_access_port_s *ap;
+	/* Optional system bus MEM-AP for accessing memory without the CPU's involvement */
+	adiv5_access_port_s *sysbus_ap;
 	/* Base address for the debug interface block */
 	uint32_t base_addr;
 	/* Cache parameters */

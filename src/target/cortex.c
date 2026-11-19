@@ -51,7 +51,10 @@ adiv5_access_port_s *cortex_ap(target_s *const target)
 
 void cortex_priv_free(void *const priv)
 {
-	adiv5_ap_unref(((cortex_priv_s *)priv)->ap);
+	cortex_priv_s *const cortex_priv = (cortex_priv_s *)priv;
+	if (cortex_priv->sysbus_ap)
+		adiv5_ap_unref(cortex_priv->sysbus_ap);
+	adiv5_ap_unref(cortex_priv->ap);
 	free(priv);
 }
 

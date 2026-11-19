@@ -173,6 +173,9 @@
 /* This is the part number from the ROM table of a R7S721030 and is a guess */
 #define ID_RZ_A1 0x012U
 
+/* AP 0 of the DAP is an AHB-AP onto the system bus, separate from the APB-AP that the core's debug unit hangs off */
+#define RENESAS_RZ_SYSBUS_AP 0U
+
 static const char *renesas_rz_part_name(uint32_t part_id);
 static uint32_t renesas_rz_ram_size(target_s *target);
 static bool renesas_rz_flash_prepare(target_s *target);
@@ -225,6 +228,14 @@ bool renesas_rz_probe(target_s *const target)
 	 */
 	target->reset = renesas_rz_reset;
 	target_add_commands(target, renesas_rz_cmd_list, target->driver);
+
+	/*
+	 * Use the system AHB-AP for memory accesses while the core is running, so things like RTT don't have to
+	 * keep halting it. If the AP can't be set up, memory accesses will just halt the core as before.
+	 */
+	adiv5_access_port_s *const sysbus_ap = adiv5_new_sysbus_ap(cortex_ap(target)->dp, RENESAS_RZ_SYSBUS_AP);
+	if (sysbus_ap)
+		cortexar_set_sysbus_ap(target, sysbus_ap);
 
 	/* Now determine the boot mode */
 	const uint8_t boot_mode = target_mem32_read32(target, RENESAS_BSCAN_BOOT_MODE) & RENESAS_BSCAN_BOOT_MODE_MASK;

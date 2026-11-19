@@ -959,6 +959,29 @@ static void cortexar_mem_handle_fault(target_s *const target, const char *const 
 	}
 }
 
+/* Takes ownership of the caller's reference to the AP */
+void cortexar_set_sysbus_ap(target_s *const target, adiv5_access_port_s *const ap)
+{
+	cortexar_priv_s *const priv = (cortexar_priv_s *)target->priv;
+	priv->base.sysbus_ap = ap;
+	/* Memory can now be accessed while the core runs, so let things like RTT know they needn't halt it */
+	target->target_options |= TOPT_NON_HALTING_MEM_IO;
+}
+
+/*
+ * If the core is running and the target has a system bus AP, return it so memory can be accessed without
+ * halting the core. N.B. these accesses bypass the MMU and caches, so they use physical addresses and only
+ * see up-to-date data in memory the firmware doesn't access through the caches.
+ */
+static adiv5_access_port_s *cortexar_running_sysbus_ap(target_s *const target)
+{
+	cortexar_priv_s *const priv = (cortexar_priv_s *)target->priv;
+	/* N.B. cortex_dbg_read32() drops the banked DCC mode, so it is set up again after we use the other AP */
+	if (!priv->base.sysbus_ap || (cortex_dbg_read32(target, CORTEXAR_DBG_DSCR) & CORTEXAR_DBG_DSCR_HALTED))
+		return NULL;
+	return priv->base.sysbus_ap;
+}
+
 /*
  * This reads memory by jumping from the debug unit bus to the system bus.
  * NB: This requires the core to be halted! Uses instruction launches on
@@ -968,6 +991,12 @@ static void cortexar_mem_handle_fault(target_s *const target, const char *const 
  */
 void cortexar_mem_read(target_s *const target, void *const dest, const target_addr64_t src, const size_t len)
 {
+	adiv5_access_port_s *const sysbus_ap = cortexar_running_sysbus_ap(target);
+	if (sysbus_ap) {
+		adiv5_mem_read(sysbus_ap, dest, src, len);
+		return;
+	}
+
 	/* If system is not halted, halt temporarily within this function. */
 	const bool halted_in_function = cortexar_halt_and_wait(target);
 
@@ -1115,6 +1144,12 @@ static void cortexar_mem_write_clean_dcache(target_s *const target, const uint32
  */
 void cortexar_mem_write(target_s *const target, const target_addr64_t dest, const void *const src, const size_t len)
 {
+	adiv5_access_port_s *const sysbus_ap = cortexar_running_sysbus_ap(target);
+	if (sysbus_ap) {
+		adiv5_mem_write(sysbus_ap, dest, src, len);
+		return;
+	}
+
 	/* If system is not halted, halt temporarily within this function. */
 	const bool halted_in_function = cortexar_halt_and_wait(target);
 

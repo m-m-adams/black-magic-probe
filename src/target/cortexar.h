@@ -35,12 +35,14 @@
 #define TARGET_CORTEXAR_H
 
 #include "general.h"
+#include "adiv5.h"
 
 bool cortexar_attach(target_s *target);
 void cortexar_detach(target_s *target);
 void cortexar_mem_read(target_s *target, void *dest, target_addr64_t src, size_t len);
 void cortexar_mem_write(target_s *target, target_addr64_t dest, const void *src, size_t len);
 void cortexar_invalidate_all_caches(target_s *target);
+void cortexar_set_sysbus_ap(target_s *target, adiv5_access_port_s *ap);
 
 #define CORTEXAR_DBG_IDR   0x000U /* ID register */
 #define CORTEXAR_DBG_WFAR  0x018U
