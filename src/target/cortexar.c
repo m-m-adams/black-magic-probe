@@ -259,6 +259,8 @@ static const uint8_t cortexar_spsr_sysm[5] = {
 #define CORTEXAR_STATUS_DATA_FAULT        (1U << 0U)
 #define CORTEXAR_STATUS_MMU_FAULT         (1U << 1U)
 #define CORTEXAR_STATUS_FAULT_CACHE_VALID (1U << 2U)
+/* Set while the core is halted and has been set up by cortexar_halt_poll() for us to run instructions on */
+#define CORTEXAR_STATUS_HALTED (1U << 3U)
 
 /*
  * Fields for Cortex-R special-purpose registers, used in the generation of GDB's target description XML.
@@ -969,16 +971,22 @@ void cortexar_set_sysbus_ap(target_s *const target, adiv5_access_port_s *const a
 }
 
 /*
- * If the core is running and the target has a system bus AP, return it so memory can be accessed without
- * halting the core. N.B. these accesses bypass the MMU and caches, so they use physical addresses and only
- * see up-to-date data in memory the firmware doesn't access through the caches.
+ * If the target has a system bus AP and the core isn't halted and set up for us to use, return the AP so
+ * memory can be accessed without the core's involvement. N.B. these accesses bypass the MMU and caches, so
+ * they use physical addresses and only see up-to-date data in memory the firmware doesn't access through
+ * the caches.
+ *
+ * This goes by our record of the core's state rather than by reading DBGDSCR. The core can halt by itself at
+ * any time (on a breakpoint for example), and until cortexar_halt_poll() has dealt with that, instructions
+ * can't be run on it and its registers haven't been saved, so it must be left alone.
  */
 static adiv5_access_port_s *cortexar_running_sysbus_ap(target_s *const target)
 {
 	cortexar_priv_s *const priv = (cortexar_priv_s *)target->priv;
-	/* N.B. cortex_dbg_read32() drops the banked DCC mode, so it is set up again after we use the other AP */
-	if (!priv->base.sysbus_ap || (cortex_dbg_read32(target, CORTEXAR_DBG_DSCR) & CORTEXAR_DBG_DSCR_HALTED))
+	if (!priv->base.sysbus_ap || (priv->core_status & CORTEXAR_STATUS_HALTED))
 		return NULL;
+	/* The banked DCC window is on the core's AP, so make sure it gets set up again after this AP is used */
+	priv->base.ap->dp->quirks &= ~ADIV5_AP_ACCESS_BANKED;
 	return priv->base.sysbus_ap;
 }
 
@@ -1350,9 +1358,12 @@ static target_halt_reason_e cortexar_halt_poll(target_s *const target, target_ad
 		return TARGET_HALT_RUNNING;
 	}
 
+	cortexar_priv_s *const priv = (cortexar_priv_s *)target->priv;
 	/* Check that the core actually halted */
-	if (!(dscr & CORTEXAR_DBG_DSCR_HALTED))
+	if (!(dscr & CORTEXAR_DBG_DSCR_HALTED)) {
+		priv->core_status &= ~CORTEXAR_STATUS_HALTED;
 		return TARGET_HALT_RUNNING;
+	}
 
 	/* Ensure the OS lock is cleared as a precaution */
 	cortexar_oslock_unlock(target);
@@ -1362,6 +1373,8 @@ static target_halt_reason_e cortexar_halt_poll(target_s *const target, target_ad
 
 	/* Save the target core's registers as debugging operations clobber them */
 	cortexar_regs_save(target);
+	/* The core is now set up for us to run instructions on, and stays that way until it's resumed */
+	priv->core_status |= CORTEXAR_STATUS_HALTED;
 
 	target_halt_reason_e reason = TARGET_HALT_FAULT;
 	/* Determine why we halted exactly from the Method Of Entry bits */
@@ -1377,7 +1390,6 @@ static target_halt_reason_e cortexar_halt_poll(target_s *const target, target_ad
 		break;
 	case CORTEXAR_DBG_DSCR_MOE_SYNC_WATCH:
 	case CORTEXAR_DBG_DSCR_MOE_ASYNC_WATCH: {
-		const cortexar_priv_s *const priv = (cortexar_priv_s *)target->priv;
 		if (priv->base.watchpoints_mask == 1U) {
 			for (const breakwatch_s *breakwatch = target->bw_list; breakwatch; breakwatch = breakwatch->next) {
 				if (breakwatch->type != TARGET_WATCH_READ && breakwatch->type != TARGET_WATCH_WRITE &&
@@ -1437,8 +1449,8 @@ static void cortexar_halt_resume(target_s *const target, const bool step)
 		dscr &= ~CORTEXAR_DBG_DSCR_INTERRUPT_DISABLE;
 	}
 
-	/* Mark the fault status and address cache invalid */
-	priv->core_status &= ~CORTEXAR_STATUS_FAULT_CACHE_VALID;
+	/* Mark the fault status and address cache invalid, and the core as no longer halted and set up for us */
+	priv->core_status &= ~(CORTEXAR_STATUS_FAULT_CACHE_VALID | CORTEXAR_STATUS_HALTED);
 
 	cortex_dbg_write32(target, CORTEXAR_DBG_DSCR, dscr & ~CORTEXAR_DBG_DSCR_ITR_ENABLE);
 	/* Ask to resume the core */
