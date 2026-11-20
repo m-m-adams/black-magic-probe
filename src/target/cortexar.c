@@ -485,6 +485,8 @@ static void cortexar_core_regs_restore(target_s *const target)
 	/* Load the value for CPSR to r0 and then shove it back into place */
 	cortexar_core_reg_write(target, 0U, priv->core_regs.cpsr);
 	cortexar_run_insn(target, ARM_MSR_CPSR_R0_INSN);
+	/* Synchronise the change of mode and execution state before the registers that depend on them are written */
+	cortexar_run_insn(target, ARM_ISB_INSN);
 	/* Fix up the program counter for the mode */
 	if (priv->core_regs.cpsr & CORTEXAR_CPSR_THUMB)
 		priv->core_regs.r[CORTEX_REG_PC] |= 1U;
