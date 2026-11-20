@@ -193,10 +193,10 @@ static const uint8_t cortexar_spsr_sysm[5] = {
  * The fourth is `STRH r1, [r0], #+2` to store a uint16_t to [r0] from r1 and increment
  * the address in r0 by 2, writing the new address back to r0.
  */
-#define ARM_LDRB_R0_R1_INSN 0xe4f01001U
-#define ARM_LDRH_R0_R1_INSN 0xe0f010b2U
-#define ARM_STRB_R1_R0_INSN 0xe4e01001U
-#define ARM_STRH_R1_R0_INSN 0xe0e010b2U
+#define ARM_LDRB_R0_R1_INSN 0xe4d01001U
+#define ARM_LDRH_R0_R1_INSN 0xe0d010b2U
+#define ARM_STRB_R1_R0_INSN 0xe4c01001U
+#define ARM_STRH_R1_R0_INSN 0xe0c010b2U
 
 /* Instruction encodings for synchronisation barriers */
 #define ARM_ISB_INSN 0xf57ff06fU
