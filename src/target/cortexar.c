@@ -200,6 +200,7 @@ static const uint16_t cortexar_spsr_encodings[5] = {
 
 /* Instruction encodings for synchronisation barriers */
 #define ARM_ISB_INSN 0xf57ff06fU
+#define ARM_DSB_INSN 0xf57ff04fU
 
 /* Coprocessor register definitions */
 
@@ -219,11 +220,14 @@ static const uint16_t cortexar_spsr_encodings[5] = {
 #define CORTEXAR_ICIALLU 15U, ENCODE_CP_REG(7U, 5U, 0U, 0U)
 /* Data Cache Clean + Invalidate by Set/Way to Unification */
 #define CORTEXAR_DCCISW 15U, ENCODE_CP_REG(7U, 14U, 0U, 2U)
+/* Data Cache Clean by MVA to Point of Coherency */
+#define CORTEXAR_DCCMVAC 15U, ENCODE_CP_REG(7U, 10U, 0U, 1U)
 
 /* SCTLR System Control Register */
 #define CORTEXAR_SCTLR 15U, ENCODE_CP_REG(1U, 0U, 0U, 0U)
 
-#define CORTEXAR_SCTLR_MMU_ENABLED (1U << 0U)
+#define CORTEXAR_SCTLR_MMU_ENABLED    (1U << 0U)
+#define CORTEXAR_SCTLR_DCACHE_ENABLED (1U << 2U)
 
 #define CORTEXAR_CPACR_CP10_FULL_ACCESS 0x00300000U
 #define CORTEXAR_CPACR_CP11_FULL_ACCESS 0x00c00000U
@@ -1062,6 +1066,31 @@ static bool cortexar_mem_write_slow(
 }
 
 /*
+ * Writes done through the core land in its L1 data cache when that's enabled, but the core fetches
+ * instructions through its separate instruction cache from the next level down. So, for example, a
+ * breakpoint instruction GDB writes, or the original instruction it puts back, may not be what the core
+ * executes. Clean the written lines out of the data cache so they reach the point of coherency. The
+ * instruction cache is invalidated on resume. Trashes r0.
+ */
+static void cortexar_mem_write_clean_dcache(target_s *const target, const uint32_t dest, const size_t len)
+{
+	const cortexar_priv_s *const priv = (cortexar_priv_s *)target->priv;
+	if (!priv->base.dcache_line_length || !len)
+		return;
+	if (!(cortexar_coproc_read(target, CORTEXAR_SCTLR) & CORTEXAR_SCTLR_DCACHE_ENABLED))
+		return;
+	/* The line length is stored as a count of uint32_t's */
+	const uint32_t line_length = priv->base.dcache_line_length * 4U;
+	const uint32_t offset = dest & (line_length - 1U);
+	uint32_t addr = dest - offset;
+	/* Count the lines rather than comparing addresses, so a range ending at the top of memory works */
+	for (size_t lines = (offset + len + line_length - 1U) / line_length; lines; --lines, addr += line_length)
+		cortexar_coproc_write(target, CORTEXAR_DCCMVAC, addr);
+	/* Make sure the cleans have completed before anything else happens */
+	cortexar_run_insn(target, ARM_DSB_INSN);
+}
+
+/*
  * This writes memory by jumping from the debug unit bus to the system bus.
  * NB: This requires the core to be halted! Uses instruction launches on
  * the core and requires we're in debug mode to work. Trashes r0.
@@ -1104,6 +1133,9 @@ void cortexar_mem_write(target_s *const target, const target_addr64_t dest, cons
 		cortexar_mem_write_fast(target, (const uint32_t *)src, len >> 2U);
 	else
 		cortexar_mem_write_slow(target, dest, (const uint8_t *)src, len);
+	/* If the write worked, make sure it's visible outside the core's L1 data cache */
+	if (!(priv->core_status & (CORTEXAR_STATUS_DATA_FAULT | CORTEXAR_STATUS_MMU_FAULT)))
+		cortexar_mem_write_clean_dcache(target, (uint32_t)dest, len);
 	/* Deal with any data faults that occurred */
 	cortexar_mem_handle_fault(target, __func__);
 
