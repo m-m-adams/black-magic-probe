@@ -218,6 +218,8 @@ static const uint16_t cortexar_spsr_encodings[5] = {
 #define CORTEXAR_DFAR 15U, ENCODE_CP_REG(6U, 0U, 0U, 0U)
 /* Instruction Cache Invalidate ALL to Unification */
 #define CORTEXAR_ICIALLU 15U, ENCODE_CP_REG(7U, 5U, 0U, 0U)
+/* Branch Predictor Invalidate ALL */
+#define CORTEXAR_BPIALL 15U, ENCODE_CP_REG(7U, 5U, 0U, 6U)
 /* Data Cache Clean + Invalidate by Set/Way to Unification */
 #define CORTEXAR_DCCISW 15U, ENCODE_CP_REG(7U, 14U, 0U, 2U)
 /* Data Cache Clean by MVA to Point of Coherency */
@@ -1354,14 +1356,18 @@ static void cortexar_halt_resume(target_s *const target, const bool step)
 	cortexar_priv_s *const priv = (cortexar_priv_s *)target->priv;
 
 	/*
-	 * Invalidate all the instruction caches if we're on a VMSA model device.
+	 * Invalidate all the instruction caches and the branch predictor if we're on a VMSA model device.
 	 * This is done before the registers are restored because it goes through r0, and because the
 	 * invalidate has to come before the program counter is written: observed on a Cortex-A9, the core
 	 * otherwise restarts with the stale copy of the instruction at the restart address, so a software
 	 * breakpoint that was just removed from there is hit again.
 	 */
-	if (target->target_options & TOPT_FLAVOUR_VIRT_MEM)
+	if (target->target_options & TOPT_FLAVOUR_VIRT_MEM) {
 		cortexar_coproc_write(target, CORTEXAR_ICIALLU, 0U);
+		cortexar_coproc_write(target, CORTEXAR_BPIALL, 0U);
+		/* Make sure the invalidates have completed before the core restarts */
+		cortexar_run_insn(target, ARM_DSB_INSN);
+	}
 
 	/* Restore the core's registers so the running program doesn't know we've been in there */
 	cortexar_regs_restore(target);
