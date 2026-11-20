@@ -1320,6 +1320,17 @@ static void cortexar_halt_resume(target_s *const target, const bool step)
 		return;
 
 	cortexar_priv_s *const priv = (cortexar_priv_s *)target->priv;
+
+	/*
+	 * Invalidate all the instruction caches if we're on a VMSA model device.
+	 * This is done before the registers are restored because it goes through r0, and because the
+	 * invalidate has to come before the program counter is written: observed on a Cortex-A9, the core
+	 * otherwise restarts with the stale copy of the instruction at the restart address, so a software
+	 * breakpoint that was just removed from there is hit again.
+	 */
+	if (target->target_options & TOPT_FLAVOUR_VIRT_MEM)
+		cortexar_coproc_write(target, CORTEXAR_ICIALLU, 0U);
+
 	/* Restore the core's registers so the running program doesn't know we've been in there */
 	cortexar_regs_restore(target);
 
@@ -1339,9 +1350,6 @@ static void cortexar_halt_resume(target_s *const target, const bool step)
 		dscr &= ~CORTEXAR_DBG_DSCR_INTERRUPT_DISABLE;
 	}
 
-	/* Invalidate all the instruction caches if we're on a VMSA model device */
-	if (target->target_options & TOPT_FLAVOUR_VIRT_MEM)
-		cortexar_coproc_write(target, CORTEXAR_ICIALLU, 0U);
 	/* Mark the fault status and address cache invalid */
 	priv->core_status &= ~CORTEXAR_STATUS_FAULT_CACHE_VALID;
 
