@@ -343,6 +343,12 @@ static bool cortexar_run_insn(target_s *const target, const uint32_t insn)
 	uint32_t status = 0;
 	while (!(status & CORTEXAR_DBG_DSCR_INSN_COMPLETE))
 		status = adiv5_dp_read(priv->base.ap->dp, ADIV5_AP_DB(CORTEXAR_BANKED_DCSR));
+	/*
+	 * In debug state the core only flags an undefined instruction, it otherwise ignores it. That
+	 * means we issued something wrong for this core, so make sure it gets noticed. N.B. the flag is sticky.
+	 */
+	if (status & CORTEXAR_DBG_DSCR_UNDEFINED)
+		DEBUG_WARN("%s: core flagged an undefined instruction, last issued %08" PRIx32 "\n", __func__, insn);
 	/* Check if the instruction triggered a synchronous data abort */
 	return cortexar_check_data_abort(target, status);
 }
