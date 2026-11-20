@@ -114,19 +114,19 @@ enum {
 };
 
 /*
- * Table of encodings for the banked SPSRs - These are encoded in the following format:
- * Bits[0]: SYSm[0]
- * Bits[15:12]: SYSm[4:1]
- * This allows these values to simply be shifted up a little to put them in the right spot
- * for use in the banked MRS/MSR instructions.
+ * Table of the SYSm values that select each of the banked SPSRs in the MRS/MSR (Banked register)
+ * instructions, which are only available on cores with the virtualisation extensions.
  */
-static const uint16_t cortexar_spsr_encodings[5] = {
-	0xc001U, /* FIQ */
-	0x1000U, /* IRQ */
-	0x5000U, /* SVC */
-	0x9000U, /* ABT */
-	0xd000U, /* UND */
+static const uint8_t cortexar_spsr_sysm[5] = {
+	0x0eU, /* FIQ */
+	0x10U, /* IRQ */
+	0x12U, /* SVC */
+	0x14U, /* ABT */
+	0x16U, /* UND */
 };
+
+/* In the banked MRS/MSR instructions, SYSm[4] goes in bit 8 (M) and SYSm[3:0] in bits 16-19 (M1) */
+#define ENCODE_BANKED_SYSM(sysm) ((((sysm) & 0x10U) << 4U) | (((sysm) & 0x0fU) << 16U))
 
 /*
  * Instruction encodings for reading/writing the VFPv3 float registers
@@ -421,11 +421,14 @@ static void cortexar_core_regs_save(target_s *const target)
 	priv->core_regs.cpsr = cortexar_core_reg_read(target, 0U);
 	/* Adjust the program counter according to the mode */
 	priv->core_regs.r[CORTEX_REG_PC] -= (priv->core_regs.cpsr & CORTEXAR_CPSR_THUMB) ? 4U : 8U;
-	/* Read the SPSRs into r0 and retrieve them */
-	for (size_t i = 0; i < ARRAY_LENGTH(priv->core_regs.spsr); ++i) {
-		/* Build and issue the banked MRS for the required SPSR */
-		cortexar_run_insn(target, ARM_MRS_R0_SPSR_INSN | (cortexar_spsr_encodings[i] << 4U));
-		priv->core_regs.spsr[i] = cortexar_core_reg_read(target, 0U);
+	/* The banked SPSRs can only be read from another mode if the core has the virtualisation extensions */
+	if (target->target_options & TOPT_FLAVOUR_VIRT_EXT) {
+		/* Read the SPSRs into r0 and retrieve them */
+		for (size_t i = 0; i < ARRAY_LENGTH(priv->core_regs.spsr); ++i) {
+			/* Build and issue the banked MRS for the required SPSR */
+			cortexar_run_insn(target, ARM_MRS_R0_SPSR_INSN | ENCODE_BANKED_SYSM(cortexar_spsr_sysm[i]));
+			priv->core_regs.spsr[i] = cortexar_core_reg_read(target, 0U);
+		}
 	}
 }
 
@@ -470,11 +473,14 @@ static inline void cortexar_core_reg_write(target_s *const target, const uint8_t
 static void cortexar_core_regs_restore(target_s *const target)
 {
 	cortexar_priv_s *const priv = (cortexar_priv_s *)target->priv;
-	/* Load the values for each of the SPSRs in turn into r0 and shove them back into place */
-	for (size_t i = 0; i < ARRAY_LENGTH(priv->core_regs.spsr); ++i) {
-		cortexar_core_reg_write(target, 0U, priv->core_regs.spsr[i]);
-		/* Build and issue the banked MSR for the required SPSR */
-		cortexar_run_insn(target, ARM_MSR_SPSR_R0_INSN | (cortexar_spsr_encodings[i] << 4U));
+	/* The banked SPSRs were only saved if the core has the virtualisation extensions */
+	if (target->target_options & TOPT_FLAVOUR_VIRT_EXT) {
+		/* Load the values for each of the SPSRs in turn into r0 and shove them back into place */
+		for (size_t i = 0; i < ARRAY_LENGTH(priv->core_regs.spsr); ++i) {
+			cortexar_core_reg_write(target, 0U, priv->core_regs.spsr[i]);
+			/* Build and issue the banked MSR for the required SPSR */
+			cortexar_run_insn(target, ARM_MSR_SPSR_R0_INSN | ENCODE_BANKED_SYSM(cortexar_spsr_sysm[i]));
+		}
 	}
 	/* Load the value for CPSR to r0 and then shove it back into place */
 	cortexar_core_reg_write(target, 0U, priv->core_regs.cpsr);
