@@ -199,7 +199,7 @@ static const uint16_t cortexar_spsr_encodings[5] = {
 #define ARM_STRH_R1_R0_INSN 0xe0e010b2U
 
 /* Instruction encodings for synchronisation barriers */
-#define ARM_ISB_INSN 0xe57ff06fU
+#define ARM_ISB_INSN 0xf57ff06fU
 
 /* Coprocessor register definitions */
 
